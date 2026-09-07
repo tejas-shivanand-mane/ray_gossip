@@ -264,6 +264,11 @@ RAY_CONFIG(bool, enable_recovery_succession_task_manager_pin, false)
 /// protobuf-size measurements are performed.
 RAY_CONFIG(bool, enable_recovery_succession_profiling, false)
 
+/// Bounded experiment: combine owner acknowledgement bookkeeping for ordinary
+/// witness publications already sharing a physical RPC. Default OFF; no wire,
+/// receiver-validation, batching-delay, or acknowledgement-threshold changes.
+RAY_CONFIG(bool, enable_recovery_witness_batch_ack, false)
+
 /// TEST ONLY: deterministically expose the crash window after a compact
 /// witness has acknowledged the proposed holder manifest but before the
 /// candidate has received/applied CommitRecoveryManifest.

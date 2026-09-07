@@ -222,6 +222,15 @@ This regenerates the PNG/PDF and prints the comparison for the remaining sizes.
 Raw results, configuration, and summary/paired CSVs retain every measured size.
 Use `plot` without exclusions to restore the full-size plots.
 
+## Opt-in owner acknowledgement experiment
+
+The historical baseline is `289bce5f99940f1b96990b725e1bdc1f0b34d624`.
+The bounded experiment is OFF by default and applies to both recovery methods.
+After rebuilding, run `python gossip_benchmarks/09_witness_batch_ack_performance.py`
+for paired flag-OFF/ON comparisons at K=1 and K=32. See
+[WITNESS_BATCH_ACK_EXPERIMENT.md](WITNESS_BATCH_ACK_EXPERIMENT.md) for the exact
+scope, metrics, profiling/correctness commands, and forward-only rollback.
+
 ## 3. Profiling
 
 ```bash

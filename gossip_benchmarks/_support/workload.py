@@ -312,6 +312,11 @@ def single_perf(args: argparse.Namespace, *, borrower_count: int = 2,
             "burst_size": args.burst_size,
             "inflight_tasks": args.inflight_tasks,
             "profiling_enabled": 0,
+            # Read outside the timed window; identify the native mode actually
+            # loaded rather than relying solely on the launch environment.
+            "witness_batch_ack_enabled": bool(dict(
+                global_worker.core_worker.get_recovery_succession_profile()
+            ).get("witness_batch_ack_enabled", False)),
             **perf,
         }
     finally:
