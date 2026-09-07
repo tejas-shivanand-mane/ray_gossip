@@ -611,10 +611,11 @@ class RecoverySuccessionManager {
   }
 
   // Full initial groups can carry provisional recipes on owner exports.
-  // R=2 and ordinary witness-backed admission remain mandatory.
+  // Positive configured R/W and ordinary witness-backed admission are required.
   bool InitialFrontierPiggybackEnabledCached() const {
     return AdaptiveRecoveryFrontierEnabledCached() &&
-           recovery_succession_target_holder_count_config_ == 2 &&
+           recovery_succession_target_holder_count_config_ > 0 &&
+           recovery_succession_witness_count_config_ > 0 &&
            !recovery_succession_certificate_admission_enabled_config_;
   }
 
@@ -683,10 +684,9 @@ class RecoverySuccessionManager {
     bool manifest_committed = true;
     std::string provisional_reservation_id;
 
-    // Owner-side one-shot transport claim. After the first full TaskSpec has
-    // been attached to a downstream PushTask, later holders use the ordinary
-    // Patch-4E install path when necessary.
-    bool first_holder_piggyback_sent = false;
+    // Transport attempts, not distinct/installed holders. After R successful
+    // piggyback serializations, later candidates use the ordinary install path.
+    uint32_t first_holder_piggybacks_sent = 0;
 
     // Borrower-side state: full TaskSpec is present, but replay remains blocked
     // until a witness-confirmed manifest explicitly contains this worker.
@@ -773,6 +773,7 @@ class RecoverySuccessionManager {
   const bool recovery_succession_certificate_admission_enabled_config_;
   const bool recovery_succession_task_manager_pin_enabled_config_;
   const uint32_t recovery_succession_target_holder_count_config_;
+  const uint32_t recovery_succession_witness_count_config_;
 
   mutable absl::Mutex mutex_;
 

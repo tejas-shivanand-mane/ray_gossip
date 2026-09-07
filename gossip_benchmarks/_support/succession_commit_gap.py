@@ -32,7 +32,8 @@ for the two Frontier members, a completed provisional holder install and
 witness publication, zero owner-side committed admissions, and zero candidate
 commit RPCs.
 
-Use --initial-piggyback-k K for K=2/4/8/16/32 with R=2/W=2 and two
+Use --holders R --witness-count W for positive independent counts, and
+--initial-piggyback-k K for K=2/4/8/16/32 with W
 independent witness nodes. The in-progress H1 admission must store all K
 recipes through a leader-last owner export with zero holder-install RPCs. Recovery
 requests the last member; every other member must have zero replay starts.
@@ -44,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import tempfile
 import time
 import uuid
@@ -267,12 +269,14 @@ def wait_for_profile(
 
 
 def main() -> None:
-    global K, NUM_TASKS, TARGET_INDEX, WITNESS_COUNT
+    global R, K, NUM_TASKS, TARGET_INDEX, WITNESS_COUNT
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--holders", type=int, default=2)
+    parser.add_argument("--witness-count", type=int, default=2)
     initial = parser.add_mutually_exclusive_group()
     initial.add_argument(
         "--initial-piggyback-k", type=int, choices=(2, 4, 8, 16, 32),
-        help="Require a full initial group with verified recipe piggybacks, R=2/W=2",
+        help="Require a full initial group with verified recipe piggybacks",
     )
     initial.add_argument(
         "--initial-k2-piggyback", dest="initial_piggyback_k",
@@ -285,6 +289,11 @@ def main() -> None:
     )
     initial.add_argument("--ordinary-k1", action="store_true")
     args = parser.parse_args()
+    if args.holders <= 0 or args.witness_count <= 0:
+        parser.error("R and W must be positive")
+    if sys.flags.optimize:
+        parser.error("Run without -O: correctness checks require assertions")
+    R, WITNESS_COUNT = args.holders, args.witness_count
     if args.ordinary_k1:
         K, NUM_TASKS, TARGET_INDEX = 1, 1, 0
     if args.fail_holder_witness_confirmation and not (args.initial_piggyback_k or args.ordinary_k1):
@@ -293,7 +302,6 @@ def main() -> None:
         K = args.initial_piggyback_k
         NUM_TASKS = K
         TARGET_INDEX = K - 1
-        WITNESS_COUNT = 2
         os.environ["RAY_RECOVERY_CERTIFICATE_ADMISSION"] = "0"
         os.environ["RAY_RECOVERY_TASKMANAGER_PIN"] = "0"
     cluster = None
@@ -326,7 +334,7 @@ def main() -> None:
             resources={"holder_node": 1},
         )
 
-        # Keep both witnesses outside the owner and holder nodes.
+        # Keep all witnesses outside the owner and holder nodes.
         for i in range(WITNESS_COUNT):
             cluster.add_node(num_cpus=0, resources={f"witness_node_{i}": 1})
 
@@ -425,6 +433,9 @@ def main() -> None:
             assert install_sent == 0 and install_completed == 0, evidence
             assert int(holder_profile.get("frontier_recipe_piggybacks_stored", 0)) == 1, holder_profile
             assert int(holder_profile.get("frontier_holder_materialize_members", 0)) == NUM_TASKS, holder_profile
+            if os.environ.get("RAY_RECOVERY_SHARED_HOLDER_RECIPE") == "1":
+                assert holder_profile.get("shared_holder_recipe_enabled"), holder_profile
+                assert int(holder_profile.get("shared_holder_recipes_current", 0)) == NUM_TASKS, holder_profile
         elif args.ordinary_k1:
             assert install_sent == 0 and install_completed == 0, profile
         else:

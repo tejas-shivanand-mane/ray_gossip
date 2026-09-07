@@ -24,9 +24,10 @@ Target semantics (R=2, K=4):
 A recovery-only pass is NOT sufficient: the benchmark must also prove the
 shared Frontier Succession topology via exactly R holder admissions.
 
-Use --initial-piggyback-k K for K=2/4/8/16/32 with R=2/W=2. This fills
+Use --holders R --witness-count W to choose positive independent counts.
+Use --initial-piggyback-k K for K=2/4/8/16/32. This fills
 one group, exports the leader last, repeats an export to the first borrower,
-and requires two verified recipe-piggyback admissions with zero separate
+and requires R verified recipe-piggyback admissions with zero separate
 holder-install RPCs before
 killing the owner. Recover the last member only, with no other member replay.
 --initial-k2-piggyback remains an alias for K=2.
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import tempfile
 import time
 import uuid
@@ -57,6 +59,7 @@ from common import (
 )
 
 R = 2
+W = 2
 K = 4
 NUM_TASKS = 2
 TARGET_INDEX = 1
@@ -71,7 +74,7 @@ PROTECTION_STABLE_S = 0.75
 def frontier_succession_system_config() -> dict:
     config = system_config(
         succession(R),
-        witness_count=R,
+        witness_count=W,
         object_timeout_ms=OBJECT_TIMEOUT_MS,
         profiling_enabled=True,
     )
@@ -280,12 +283,14 @@ def wait_for_protection_quiescence(owner, borrowers, timeout_s: float) -> dict:
 
 
 def main() -> None:
-    global K, NUM_TASKS, TARGET_INDEX
+    global R, W, K, NUM_TASKS, TARGET_INDEX
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--holders", type=int, default=2)
+    parser.add_argument("--witness-count", type=int, default=2)
     initial = parser.add_mutually_exclusive_group()
     initial.add_argument(
         "--initial-piggyback-k", type=int, choices=(2, 4, 8, 16, 32),
-        help="Require a full initial group with verified recipe piggybacks, R=2/W=2",
+        help="Require a full initial group with verified recipe piggybacks",
     )
     initial.add_argument(
         "--initial-k2-piggyback", dest="initial_piggyback_k",
@@ -294,6 +299,11 @@ def main() -> None:
     )
     initial.add_argument("--ordinary-k1", action="store_true")
     args = parser.parse_args()
+    if args.holders <= 0 or args.witness_count <= 0:
+        parser.error("R and W must be positive")
+    if sys.flags.optimize:
+        parser.error("Run without -O: correctness checks require assertions")
+    R, W = args.holders, args.witness_count
     if args.ordinary_k1:
         K, NUM_TASKS, TARGET_INDEX = 1, 1, 0
     if args.initial_piggyback_k:
@@ -325,7 +335,7 @@ def main() -> None:
         )
         # Succession witnesses are control-plane durability nodes. They are
         # distinct from the CoreWorker holders admitted below.
-        for i in range(R):
+        for i in range(W):
             cluster.add_node(
                 num_cpus=0,
                 resources={f"witness_node_{i}": 1},
@@ -341,7 +351,7 @@ def main() -> None:
             log_to_driver=False,
             include_dashboard=False,
         )
-        expected_nodes = 1 + 1 + 1 + R + R
+        expected_nodes = 1 + 1 + 1 + W + R
         wait_for_cluster(ray, expected_nodes, 30.0)
 
         Owner, Borrower = types()
@@ -418,6 +428,11 @@ def main() -> None:
             assert int(profile.get("holder_install_rpcs_sent", 0)) == 0, evidence
             assert int(profile.get("holder_install_rpcs_completed", 0)) == 0, evidence
             for borrower_profile in borrower_profiles:
+                if os.environ.get("RAY_RECOVERY_SHARED_HOLDER_RECIPE") == "1":
+                    assert borrower_profile.get("shared_holder_recipe_enabled"), evidence
+                    assert int(borrower_profile.get(
+                        "shared_holder_recipes_current", 0
+                    )) == NUM_TASKS, evidence
                 assert int(borrower_profile.get(
                     "frontier_recipe_piggybacks_stored", 0
                 )) == 1, evidence
@@ -464,9 +479,9 @@ def main() -> None:
         print("PASS: Recovery Frontier + Succession non-leader owner-node failure")
         print(f"  R                         = {R}")
         print(f"  K                         = {K}")
+        print(f"  W                         = {W}")
         if args.initial_piggyback_k:
-            print("  W                         = 2")
-            print("  verified recipe piggybacks = 2; separate install RPCs = 0")
+            print(f"  verified recipe piggybacks = {R}; separate install RPCs = 0")
         print(f"  initial manifest builds   = {initial_manifest_builds}")
         print(f"  candidate reports recv    = {reports_received}")
         print(f"  candidate reports accept  = {reports_accepted}")

@@ -393,7 +393,9 @@ RecoverySuccessionManager::RecoverySuccessionManager(rpc::Address self_address)
       recovery_succession_task_manager_pin_enabled_config_(
           RayConfig::instance().enable_recovery_succession_task_manager_pin()),
       recovery_succession_target_holder_count_config_(
-          RayConfig::instance().recovery_succession_target_holder_count()) {
+          RayConfig::instance().recovery_succession_target_holder_count()),
+      recovery_succession_witness_count_config_(
+          RayConfig::instance().recovery_succession_witness_count()) {
   if (recovery_frontier_enabled_config_) {
     RAY_CHECK_GT(recovery_frontier_group_size_config_, 0U)
         << "recovery_frontier_group_size must be positive";
@@ -1993,7 +1995,9 @@ bool RecoverySuccessionManager::StoreInitialFrontierPiggybackLocked(
       static_cast<uint32_t>(snapshot.members_size()) != member_count ||
       snapshot.members(0).task_id() != snapshot.group_id() ||
       manifest.tombstoned() || manifest.frozen() ||
-      manifest.target_holder_count() != 2 || manifest.witness_count() != 2 ||
+      manifest.target_holder_count() != recovery_succession_target_holder_count_config_ ||
+      manifest.witness_count() != recovery_succession_witness_count_config_ ||
+      static_cast<uint32_t>(manifest.witness_raylets_size()) != manifest.witness_count() ||
       ContainsWorker(manifest, self_address_)) {
     return false;
   }
@@ -2832,7 +2836,11 @@ void RecoverySuccessionManager::PopulateTaskArgumentMetadataInternal(
           group->Generation() == 0 && group->CommittedMemberCount() == 0 &&
           owner != nullptr && SameWorker(owner->address(), self_address_) &&
           !source->manifest().tombstoned() && !source->manifest().frozen() &&
-          source->manifest().witness_count() == 2 &&
+          source->manifest().target_holder_count() ==
+              recovery_succession_target_holder_count_config_ &&
+          source->manifest().witness_count() == recovery_succession_witness_count_config_ &&
+          static_cast<uint32_t>(source->manifest().witness_raylets_size()) ==
+              source->manifest().witness_count() &&
           (initial == adaptive_frontier_initial_append_batches_.end() ||
            (initial->second.begin_member_index == 0 &&
             initial->second.end_member_index == group->MemberCount()))) {
@@ -2863,9 +2871,9 @@ void RecoverySuccessionManager::PopulateTaskArgumentMetadataInternal(
     }
 
     // Ordinary adaptive K=1 holder fast path. Lazy activation staged one
-    // sanitized producer TaskSpec in the existing task state. The first two
+    // sanitized producer TaskSpec in the existing task state. The first R
     // downstream metadata builds may transport it in the already-supported
-    // Patch-4F field; the duplicate is released after the second send. Every
+    // Patch-4F field; the duplicate is released after R sends. Every
     // receiver remains provisional and must still verify witness durability.
     if (!recovery_witness_holder_baseline_enabled_config_ &&
         !recovery_frontier_enabled_config_ &&
@@ -2874,7 +2882,8 @@ void RecoverySuccessionManager::PopulateTaskArgumentMetadataInternal(
       const auto producer_it = task_states_.find(producer_task_id);
       if (producer_it != task_states_.end()) {
         TaskRecoveryState &state = producer_it->second;
-        if (state.manifest_committed &&
+        if (state.manifest_committed && state.manifest.target_holder_count() > 0 &&
+            state.first_holder_piggybacks_sent < state.manifest.target_holder_count() &&
             !state.manifest.tombstoned() &&
             !state.manifest.frozen() &&
             state.manifest.task_id() == source->task_id() &&
@@ -2892,13 +2901,11 @@ void RecoverySuccessionManager::PopulateTaskArgumentMetadataInternal(
               !serialized_task_spec.empty()) {
             out->set_first_holder_task_spec(serialized_task_spec);
 
-            // first_holder_piggyback_sent is reused as a one-bit two-shot
-            // counter. Keep the transient recipe after the first piggyback so
-            // one more borrower can receive it; release it after the second.
-            if (state.first_holder_piggyback_sent) {
+            // A repeated export can go to the same worker. This bounded send
+            // budget never counts as holder admission or distinct-node proof.
+            ++state.first_holder_piggybacks_sent;
+            if (state.first_holder_piggybacks_sent >= state.manifest.target_holder_count()) {
               state.task_spec.reset();
-            } else {
-              state.first_holder_piggyback_sent = true;
             }
 
             if (profiling_enabled_) {
