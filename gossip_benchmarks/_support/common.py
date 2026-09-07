@@ -131,6 +131,13 @@ def system_config(
         )
     if object_timeout_ms is not None:
         config["object_timeout_milliseconds"] = int(object_timeout_ms)
+    shared_recipe = os.environ.get("RAY_RECOVERY_SHARED_HOLDER_RECIPE")
+    if shared_recipe is not None:
+        if shared_recipe not in ("0", "1"):
+            raise ValueError("RAY_RECOVERY_SHARED_HOLDER_RECIPE must be 0 or 1")
+        config["enable_recovery_succession_shared_holder_recipe"] = (
+            shared_recipe == "1" and method.recovery_enabled and not method.baseline_enabled
+        )
     return config
 
 

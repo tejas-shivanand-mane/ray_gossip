@@ -380,6 +380,8 @@ RecoverySuccessionManager::RecoverySuccessionManager(rpc::Address self_address)
           RayConfig::instance().enable_recovery_succession_profiling()),
       recovery_succession_enabled_config_(
           RayConfig::instance().enable_recovery_succession()),
+      shared_holder_recipe_enabled_config_(
+          RayConfig::instance().enable_recovery_succession_shared_holder_recipe()),
       recovery_frontier_enabled_config_(
           RayConfig::instance().enable_recovery_frontier()),
       recovery_frontier_group_size_config_(
@@ -404,6 +406,56 @@ RecoverySuccessionManager::RecoverySuccessionManager(rpc::Address self_address)
 bool RecoverySuccessionManager::IsEligibleTask(const rpc::TaskSpec &task_spec) {
   return task_spec.type() == rpc::TaskType::NORMAL_TASK && !task_spec.returns_dynamic() &&
          !task_spec.streaming_generator() && task_spec.max_retries() != 0;
+}
+
+void RecoverySuccessionManager::StoreFrontierHolderRecipeLocked(
+    const std::shared_ptr<const rpc::TaskSpec> &recipe,
+    const rpc::RecoveryManifest &manifest,
+    TaskRecoveryState *state) {
+  RAY_CHECK(recipe != nullptr && state != nullptr);
+  bool share = shared_holder_recipe_enabled_config_ &&
+               AdaptiveRecoveryFrontierEnabledCached();
+  if (share) {
+    // A shared recipe must already be sanitized. Never mutate the group copy,
+    // and never retain nested transport-only lineage through this shortcut.
+    const auto has_payload = [](const rpc::ObjectReference &ref) {
+      return ref.has_recovery_metadata() &&
+             !ref.recovery_metadata().first_holder_task_spec().empty();
+    };
+    for (const auto &arg : recipe->args()) {
+      if (arg.has_object_ref() && has_payload(arg.object_ref())) {
+        share = false;
+      }
+      for (const auto &ref : arg.nested_inlined_refs()) {
+        if (has_payload(ref)) {
+          share = false;
+        }
+      }
+    }
+    for (const auto &entry : recipe->recovery_argument_metadata()) {
+      if (!entry.initial_frontier_recipe().empty() ||
+          (entry.has_recovery_metadata() &&
+           !entry.recovery_metadata().first_holder_task_spec().empty())) {
+        share = false;
+      }
+    }
+  }
+  if (share) {
+    state->task_spec.Share(recipe);
+    if (profiling_enabled_) {
+      ++profile_.holder_recipe_copies_avoided;
+    }
+    return;
+  }
+
+  rpc::TaskSpec copy;
+  copy.CopyFrom(*recipe);
+  ClearFirstHolderTaskSpecPiggybacks(&copy);
+  copy.mutable_recovery_manifest()->CopyFrom(manifest);
+  state->task_spec = std::move(copy);
+  if (profiling_enabled_) {
+    ++profile_.holder_recipe_fallback_copies;
+  }
 }
 
 bool RecoverySuccessionManager::RecoveryFrontierEnabled() const {
@@ -631,14 +683,9 @@ bool RecoverySuccessionManager::ApplyAdaptiveRecoveryFrontierAppend(
         recovery_succession_internal::BuildFrontierMemberManifest(
             group_manifest, member);
 
-    rpc::TaskSpec stored_task_spec;
-    stored_task_spec.CopyFrom(*member.task_spec);
-    ClearFirstHolderTaskSpecPiggybacks(&stored_task_spec);
-    stored_task_spec.mutable_recovery_manifest()->CopyFrom(member_manifest);
-
     TaskRecoveryState &member_state = task_states_[member.task_id];
     member_state.manifest.CopyFrom(member_manifest);
-    member_state.task_spec = std::move(stored_task_spec);
+    StoreFrontierHolderRecipeLocked(member.task_spec, member_manifest, &member_state);
     member_state.manifest_committed = true;
     member_state.provisional_reservation_id.clear();
     member_state.provisional_piggyback_task_spec = false;
@@ -2006,13 +2053,9 @@ bool RecoverySuccessionManager::StoreInitialFrontierPiggybackLocked(
   for (const auto &member : group->Members()) {
     auto member_manifest =
         recovery_succession_internal::BuildFrontierMemberManifest(manifest, member);
-    rpc::TaskSpec stored_task_spec;
-    stored_task_spec.CopyFrom(*member.task_spec);
-    ClearFirstHolderTaskSpecPiggybacks(&stored_task_spec);
-    stored_task_spec.mutable_recovery_manifest()->CopyFrom(member_manifest);
     auto &state = task_states_[member.task_id];
     state.manifest.CopyFrom(member_manifest);
-    state.task_spec = std::move(stored_task_spec);
+    StoreFrontierHolderRecipeLocked(member.task_spec, member_manifest, &state);
     state.manifest_committed = false;
     state.provisional_reservation_id.clear();
     state.provisional_piggyback_task_spec = true;
@@ -2106,13 +2149,8 @@ bool RecoverySuccessionManager::InstallRecoveryHolder(
         return false;
       }
 
-      rpc::TaskSpec stored_task_spec;
-      stored_task_spec.CopyFrom(*member.task_spec);
-      ClearFirstHolderTaskSpecPiggybacks(&stored_task_spec);
-      stored_task_spec.mutable_recovery_manifest()->CopyFrom(member_manifest);
-
       member_state.manifest.CopyFrom(member_manifest);
-      member_state.task_spec = std::move(stored_task_spec);
+      StoreFrontierHolderRecipeLocked(member.task_spec, member_manifest, &member_state);
       member_state.manifest_committed = false;
       member_state.provisional_reservation_id = request.reservation_id();
       member_state.provisional_piggyback_task_spec = false;
@@ -3680,7 +3718,17 @@ bool RecoverySuccessionManager::HasConfirmedHolderResponsibilities() const {
 RecoverySuccessionManager::RecoverySuccessionProfile
 RecoverySuccessionManager::GetProfileSnapshot() const {
   absl::MutexLock lock(&mutex_);
-  return profile_;
+  auto snapshot = profile_;
+  if (profiling_enabled_) {
+    for (const auto &entry : task_states_) {
+      if (entry.second.task_spec.IsShared()) {
+        ++snapshot.shared_holder_recipes_current;
+        snapshot.shared_holder_recipe_bytes_current +=
+            entry.second.task_spec->ByteSizeLong();
+      }
+    }
+  }
+  return snapshot;
 }
 
 void RecoverySuccessionManager::ResetProfile() {

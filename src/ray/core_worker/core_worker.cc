@@ -1463,6 +1463,9 @@ CoreWorker::GetRecoverySuccessionProfileJson() const {
 
   result["profiling_enabled"] =
       recovery_succession_profiling_enabled_;
+  result["shared_holder_recipe_enabled"] =
+      recovery_succession_enabled_ && !recovery_witness_holder_baseline_enabled_ &&
+      RayConfig::instance().enable_recovery_succession_shared_holder_recipe();
 
   result["witness_batch_ack_enabled"] = recovery_witness_ack_batch_handler_ != nullptr;
   const auto ack_stats = recovery_witness_ack_batch_handler_ != nullptr
@@ -1500,6 +1503,11 @@ CoreWorker::GetRecoverySuccessionProfileJson() const {
 
   result["candidate_reports_received"] =
       profile.candidate_reports_received;
+  result["holder_recipe_copies_avoided"] = profile.holder_recipe_copies_avoided;
+  result["holder_recipe_fallback_copies"] = profile.holder_recipe_fallback_copies;
+  result["shared_holder_recipes_current"] = profile.shared_holder_recipes_current;
+  result["shared_holder_recipe_bytes_current"] =
+      profile.shared_holder_recipe_bytes_current;
   result["candidate_reports_accepted"] =
       profile.candidate_reports_accepted;
       

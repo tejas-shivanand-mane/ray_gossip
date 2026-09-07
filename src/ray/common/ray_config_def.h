@@ -269,6 +269,10 @@ RAY_CONFIG(bool, enable_recovery_succession_profiling, false)
 /// receiver-validation, batching-delay, or acknowledgement-threshold changes.
 RAY_CONFIG(bool, enable_recovery_witness_batch_ack, false)
 
+/// Share a sanitized immutable Frontier recipe between the Succession group
+/// and holder state. Wire format and protection/replay checks are unchanged.
+RAY_CONFIG(bool, enable_recovery_succession_shared_holder_recipe, false)
+
 /// TEST ONLY: deterministically expose the crash window after a compact
 /// witness has acknowledged the proposed holder manifest but before the
 /// candidate has received/applied CommitRecoveryManifest.

@@ -64,6 +64,11 @@ class RecoverySuccessionManager {
   };
 
   struct RecoverySuccessionProfile {
+    uint64_t holder_recipe_copies_avoided = 0;
+    uint64_t holder_recipe_fallback_copies = 0;
+    uint64_t shared_holder_recipes_current = 0;
+    // Serialized recipe bytes referenced by shared states, not heap/RSS bytes.
+    uint64_t shared_holder_recipe_bytes_current = 0;
     uint64_t candidate_reports_received = 0;
     uint64_t candidate_reports_accepted = 0;
 
@@ -637,6 +642,30 @@ class RecoverySuccessionManager {
   void PopulateTaskArgumentMetadataInternal(
       rpc::TaskSpec *task_spec, bool require_frontier_commit);
 
+  // Optional-like storage keeps every reader on the same immutable recipe
+  // interface. Replay/admission already copy and attach the current manifest.
+  class RetainedTaskRecipe {
+   public:
+    bool has_value() const { return shared_ != nullptr || owned_.has_value(); }
+    const rpc::TaskSpec &value() const { return shared_ ? *shared_ : owned_.value(); }
+    const rpc::TaskSpec *operator->() const { return &value(); }
+    void reset() { owned_.reset(); shared_.reset(); }
+    RetainedTaskRecipe &operator=(rpc::TaskSpec recipe) {
+      shared_.reset();
+      owned_ = std::move(recipe);
+      return *this;
+    }
+    void Share(std::shared_ptr<const rpc::TaskSpec> recipe) {
+      owned_.reset();
+      shared_ = std::move(recipe);
+    }
+    bool IsShared() const { return shared_ != nullptr; }
+
+   private:
+    std::optional<rpc::TaskSpec> owned_;
+    std::shared_ptr<const rpc::TaskSpec> shared_;
+  };
+
   struct TaskRecoveryState {
     rpc::RecoveryManifest manifest;
 
@@ -646,7 +675,7 @@ class RecoverySuccessionManager {
 
     // Present on executors and installed/piggyback lineage holders. The
     // original owner may leave this empty and use TaskManager on demand.
-    std::optional<rpc::TaskSpec> task_spec;
+    RetainedTaskRecipe task_spec;
 
     // An installed holder is not usable until either CommitRecoveryManifest
     // arrives or the holder independently confirms the manifest from a compact
@@ -681,6 +710,11 @@ class RecoverySuccessionManager {
       return remaining_live_returns > 0 || !live_return_ids.empty();
     }
   };
+
+  void StoreFrontierHolderRecipeLocked(
+      const std::shared_ptr<const rpc::TaskSpec> &recipe,
+      const rpc::RecoveryManifest &manifest,
+      TaskRecoveryState *state) ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   struct BorrowedObjectRecoveryState {
     TaskID task_id;
@@ -732,6 +766,7 @@ class RecoverySuccessionManager {
   // touched by per-task Recovery Succession paths instead of repeatedly
   // traversing RayConfig/string-backed configuration state.
   const bool recovery_succession_enabled_config_;
+  const bool shared_holder_recipe_enabled_config_;
   const bool recovery_frontier_enabled_config_;
   const uint32_t recovery_frontier_group_size_config_;
   const bool recovery_witness_holder_baseline_enabled_config_;
