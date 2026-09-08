@@ -231,156 +231,6 @@ int CompareRecoveryManifestVersions(const rpc::RecoveryManifest &left,
 }
 
 
-// One publication retains its own threshold and outcome. The experiment only
-// shares synchronization across results delivered together, never durability.
-struct BatchedWitnessPublication {
-  size_t witness_count = 0;
-  bool require_all_witnesses = false;
-  size_t completed = 0;
-  size_t stored_count = 0;
-  bool callback_sent = false;
-  std::optional<rpc::RecoveryManifest> newest_manifest;
-  std::function<void(bool, std::optional<rpc::RecoveryManifest>)> callback;
-};
-
-struct BatchedWitnessAckContext : RecoveryWitnessAckContext {
-  std::shared_ptr<BatchedWitnessPublication> publication;
-  uint64_t witness_start_ns = 0;
-};
-
-class OwnerWitnessAckBatchHandler : public RecoveryWitnessAckBatchHandler {
- public:
-  explicit OwnerWitnessAckBatchHandler(
-      std::shared_ptr<RecoverySuccessionManager> manager, bool profiling)
-      : manager_(std::move(manager)), profiling_(profiling) {}
-
-  void HandleReplies(const Status &status,
-                     const std::vector<RecoveryWitnessAckResult> &results) override {
-    if (results.empty()) {
-      return;
-    }
-    struct Completion {
-      bool ready = false;
-      bool success = false;
-      std::optional<rpc::RecoveryManifest> newest_manifest;
-    };
-    const uint64_t start_ns = profiling_ ? RecoveryProfileNowNs() : 0;
-    std::vector<Completion> completions(results.size());
-    uint64_t lock_wait_ns = 0;
-    {
-      const uint64_t wait_start_ns = profiling_ ? RecoveryProfileNowNs() : 0;
-      absl::MutexLock lock(&mutex_);
-      if (profiling_) {
-        lock_wait_ns = RecoveryProfileNowNs() - wait_start_ns;
-      }
-      for (size_t i = 0; i < results.size(); ++i) {
-        const auto &context =
-            static_cast<const BatchedWitnessAckContext &>(*results[i].context);
-        auto &state = *context.publication;
-        const auto &reply = *results[i].reply;
-        ++state.completed;
-        const bool stored = status.ok() && reply.stored();
-        if (stored) {
-          ++state.stored_count;
-        }
-        if (reply.has_latest_manifest() &&
-            (!state.newest_manifest.has_value() ||
-             CompareRecoveryManifestVersions(reply.latest_manifest(),
-                                             *state.newest_manifest) > 0)) {
-          state.newest_manifest = reply.latest_manifest();
-        }
-        if (state.callback_sent) {
-          continue;
-        }
-        auto &completion = completions[i];
-        if (state.require_all_witnesses) {
-          completion.ready = state.completed == state.witness_count;
-          completion.success = state.stored_count == state.witness_count;
-        } else {
-          completion.ready = stored || state.completed == state.witness_count;
-          completion.success = stored;
-        }
-        if (completion.ready) {
-          state.callback_sent = true;
-          if (!completion.success) {
-            completion.newest_manifest = state.newest_manifest;
-          }
-        }
-      }
-    }
-    const uint64_t bookkeeping_ns = profiling_ ? RecoveryProfileNowNs() - start_ns : 0;
-    if (profiling_) {
-      batches_.fetch_add(1, std::memory_order_relaxed);
-      items_.fetch_add(results.size(), std::memory_order_relaxed);
-      bookkeeping_time_ns_.fetch_add(bookkeeping_ns, std::memory_order_relaxed);
-      lock_wait_time_ns_.fetch_add(lock_wait_ns, std::memory_order_relaxed);
-    }
-
-    // No admission, rollback, or reentrant enqueue runs under the batch mutex.
-    // Each publication still executes its existing continuation exactly once.
-    for (size_t i = 0; i < results.size(); ++i) {
-      const auto &context =
-          static_cast<const BatchedWitnessAckContext &>(*results[i].context);
-      const auto &reply = *results[i].reply;
-      if (context.witness_start_ns != 0) {
-        manager_->RecordWitnessUpdateRpcLatency(
-            RecoveryProfileNowNs() - context.witness_start_ns);
-        manager_->RecordWitnessUpdateRpcBreakdown(
-            reply.client_queue_time_ns(),
-            reply.client_submit_to_cq_time_ns(),
-            reply.client_cq_to_main_loop_time_ns(),
-            reply.client_main_loop_to_batch_callback_time_ns(),
-            reply.client_enqueue_cpu_time_ns(),
-            reply.client_batch_build_cpu_time_ns(),
-            reply.client_batch_demux_cpu_time_ns(),
-            reply.witness_batch_queue_time_ns(),
-            reply.witness_handler_time_ns(),
-            reply.witness_mutex_wait_time_ns(),
-            reply.witness_mutex_hold_time_ns(),
-            reply.client_batch_leader(),
-            reply.client_batch_size());
-      }
-      auto &completion = completions[i];
-      const uint64_t continuation_start_ns = profiling_ ? RecoveryProfileNowNs() : 0;
-      if (completion.ready) {
-        context.publication->callback(completion.success,
-                                      std::move(completion.newest_manifest));
-      }
-      if (profiling_) {
-        manager_->RecordWitnessLogicalCallbackCpu(
-            bookkeeping_ns / results.size() +
-                RecoveryProfileNowNs() - continuation_start_ns,
-            completion.ready);
-      }
-    }
-  }
-
-  RecoveryWitnessAckBatchStats GetStats() const override {
-    return {batches_.load(std::memory_order_relaxed),
-            items_.load(std::memory_order_relaxed),
-            bookkeeping_time_ns_.load(std::memory_order_relaxed),
-            lock_wait_time_ns_.load(std::memory_order_relaxed)};
-  }
-
-  void ResetStats() override {
-    batches_.store(0, std::memory_order_relaxed);
-    items_.store(0, std::memory_order_relaxed);
-    bookkeeping_time_ns_.store(0, std::memory_order_relaxed);
-    lock_wait_time_ns_.store(0, std::memory_order_relaxed);
-  }
-
- private:
-  // All publication counters above are protected by this owner-wide mutex.
-  // The profiler reports waiting separately to expose cross-witness contention.
-  absl::Mutex mutex_;
-  const std::shared_ptr<RecoverySuccessionManager> manager_;
-  const bool profiling_;
-  std::atomic<uint64_t> batches_{0};
-  std::atomic<uint64_t> items_{0};
-  std::atomic<uint64_t> bookkeeping_time_ns_{0};
-  std::atomic<uint64_t> lock_wait_time_ns_{0};
-};
-
 bool MergeRecoveryWitnessViews(const rpc::RecoveryManifest &incoming,
                                rpc::RecoveryManifest *state) {
   if (state == nullptr || incoming.task_id().empty() || !incoming.has_version()) {
@@ -727,11 +577,6 @@ CoreWorker::CoreWorker(
   if (recovery_succession_enabled_) {
     recovery_succession_manager_ =
         std::make_shared<RecoverySuccessionManager>(rpc_address_);
-
-    if (RayConfig::instance().enable_recovery_witness_batch_ack()) {
-      recovery_witness_ack_batch_handler_ = std::make_shared<OwnerWitnessAckBatchHandler>(
-          recovery_succession_manager_, recovery_succession_profiling_enabled_);
-    }
 
     task_manager_->SetLineageReleasedCallback([this](const TaskID &task_id) {
       // RemoveLineageReference holds the TaskManager lock.
@@ -1467,14 +1312,6 @@ CoreWorker::GetRecoverySuccessionProfileJson() const {
       recovery_succession_enabled_ && !recovery_witness_holder_baseline_enabled_ &&
       RayConfig::instance().enable_recovery_succession_shared_holder_recipe();
 
-  result["witness_batch_ack_enabled"] = recovery_witness_ack_batch_handler_ != nullptr;
-  const auto ack_stats = recovery_witness_ack_batch_handler_ != nullptr
-      ? recovery_witness_ack_batch_handler_->GetStats() : RecoveryWitnessAckBatchStats{};
-  result["witness_ack_batches_processed"] = ack_stats.batches;
-  result["witness_ack_batch_items_processed"] = ack_stats.items;
-  result["witness_ack_batch_bookkeeping_time_ns"] = ack_stats.bookkeeping_time_ns;
-  result["witness_ack_batch_lock_wait_time_ns"] = ack_stats.lock_wait_time_ns;
-
   result["normal_submit_profile_calls"] =
       normal_submit_profile_calls_.load(std::memory_order_relaxed);
   result["normal_submit_prebuild_time_ns"] =
@@ -1787,9 +1624,6 @@ void CoreWorker::ResetRecoverySuccessionProfile() {
 
   if (recovery_succession_manager_ != nullptr) {
     recovery_succession_manager_->ResetProfile();
-  }
-  if (recovery_witness_ack_batch_handler_ != nullptr) {
-    recovery_witness_ack_batch_handler_->ResetStats();
   }
 }
 
@@ -9406,23 +9240,9 @@ void CoreWorker::PublishRecoveryManifestToWitnesses(
         newest_manifest ABSL_GUARDED_BY(mutex);
   };
 
-  const size_t witness_count = static_cast<size_t>(manifest.witness_raylets_size());
+  auto state = std::make_shared<PublishState>();
 
-  // Certificates use their separate publisher. Keep tombstones and any
-  // certificate-mode ordinary publications on the original callback path too.
-  const bool batch_ack = recovery_witness_ack_batch_handler_ != nullptr &&
-      !manifest.tombstoned() &&
-      !RayConfig::instance().enable_recovery_succession_certificate_admission();
-  std::shared_ptr<BatchedWitnessPublication> batch_publication;
-  std::shared_ptr<PublishState> state;
-  if (batch_ack) {
-    batch_publication = std::make_shared<BatchedWitnessPublication>();
-    batch_publication->witness_count = witness_count;
-    batch_publication->require_all_witnesses = require_all_witnesses;
-    batch_publication->callback = callback;
-  } else {
-    state = std::make_shared<PublishState>();
-  }
+  const size_t witness_count = static_cast<size_t>(manifest.witness_raylets_size());
 
   for (const rpc::Address &witness : manifest.witness_raylets()) {
     const uint64_t witness_request_build_start_ns =
@@ -9471,15 +9291,6 @@ void CoreWorker::PublishRecoveryManifestToWitnesses(
                   manifest.ByteSizeLong()));
 
       witness_start_ns = RecoveryProfileNowNs();
-    }
-
-    if (batch_ack) {
-      auto context = std::make_shared<BatchedWitnessAckContext>();
-      context->publication = batch_publication;
-      context->witness_start_ns = witness_start_ns;
-      witness_client->UpdateRecoveryWitnessWithBatchHandler(
-          std::move(request), std::move(context), recovery_witness_ack_batch_handler_);
-      continue;
     }
 
     witness_client->UpdateRecoveryWitness(

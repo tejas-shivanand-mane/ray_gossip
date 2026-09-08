@@ -27,7 +27,7 @@ python gossip_benchmarks/11_generalized_succession_correctness.py
 ```
 
 Default: 48 cases over (R,W)=(1,1),(1,3),(2,2),(2,3),(3,1),(3,3), shared holder
-recipes OFF and ON, batch ACKs OFF. Each setting runs K=1 owner-node failure,
+recipes OFF and ON. Each setting runs K=1 owner-node failure,
 a full K=32 group with duplicate first-borrower export and owner-node failure,
 witness-ACK/commit-gap recovery, and blocked holder confirmation that must
 prevent replay. Successful full-group cases require R actual admissions,

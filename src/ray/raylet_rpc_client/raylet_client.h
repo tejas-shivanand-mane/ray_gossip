@@ -189,11 +189,6 @@ class RayletClient : public RayletClientInterface {
       rpc::GetRecoveryWitnessRequest &&request,
       const rpc::ClientCallback<rpc::GetRecoveryWitnessReply> &callback) override;
 
-  void UpdateRecoveryWitnessWithBatchHandler(
-      rpc::UpdateRecoveryWitnessRequest &&request,
-      std::shared_ptr<RecoveryWitnessAckContext> context,
-      std::shared_ptr<RecoveryWitnessAckBatchHandler> handler) override;
-
  private:
   struct PendingRecoveryWitnessUpdate {
     rpc::UpdateRecoveryWitnessRequest request;
@@ -203,11 +198,7 @@ class RayletClient : public RayletClientInterface {
     uint64_t client_queue_time_ns = 0;
     uint64_t client_enqueue_cpu_time_ns = 0;
     uint64_t client_batch_build_cpu_time_ns = 0;
-    std::shared_ptr<RecoveryWitnessAckContext> context = nullptr;
-    std::shared_ptr<RecoveryWitnessAckBatchHandler> batch_handler = nullptr;
   };
-
-  void EnqueueRecoveryWitnessUpdate(PendingRecoveryWitnessUpdate item);
 
   struct RecoveryWitnessBatchState {
     std::mutex mutex;

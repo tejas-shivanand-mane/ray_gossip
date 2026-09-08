@@ -120,15 +120,6 @@ def system_config(
     }
     if method.recovery_enabled:
         config["recovery_succession_target_holder_count"] = int(method.holders)
-    # Explicit opt-in for the bounded ACK experiment. Omit the new native key
-    # when unset so existing commands can still run against the baseline build.
-    batch_ack = os.environ.get("RAY_RECOVERY_WITNESS_BATCH_ACK")
-    if batch_ack is not None:
-        if batch_ack not in ("0", "1"):
-            raise ValueError("RAY_RECOVERY_WITNESS_BATCH_ACK must be 0 or 1")
-        config["enable_recovery_witness_batch_ack"] = (
-            batch_ack == "1" and method.recovery_enabled
-        )
     if object_timeout_ms is not None:
         config["object_timeout_milliseconds"] = int(object_timeout_ms)
     shared_recipe = os.environ.get("RAY_RECOVERY_SHARED_HOLDER_RECIPE")

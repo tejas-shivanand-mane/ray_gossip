@@ -591,21 +591,6 @@ void RayletClient::FreeLocalObjects(const rpc::FreeLocalObjectsRequest &request)
 void RayletClient::UpdateRecoveryWitness(
     rpc::UpdateRecoveryWitnessRequest &&request,
     const rpc::ClientCallback<rpc::UpdateRecoveryWitnessReply> &callback) {
-  EnqueueRecoveryWitnessUpdate({std::move(request), callback});
-}
-
-void RayletClient::UpdateRecoveryWitnessWithBatchHandler(
-    rpc::UpdateRecoveryWitnessRequest &&request,
-    std::shared_ptr<RecoveryWitnessAckContext> context,
-    std::shared_ptr<RecoveryWitnessAckBatchHandler> handler) {
-  RAY_CHECK(context != nullptr && handler != nullptr);
-  PendingRecoveryWitnessUpdate item{std::move(request), {}};
-  item.context = std::move(context);
-  item.batch_handler = std::move(handler);
-  EnqueueRecoveryWitnessUpdate(std::move(item));
-}
-
-void RayletClient::EnqueueRecoveryWitnessUpdate(PendingRecoveryWitnessUpdate item) {
   const bool profiling =
       ::RayConfig::instance().enable_recovery_succession_profiling();
   const uint64_t enqueue_time_ns =
@@ -613,6 +598,7 @@ void RayletClient::EnqueueRecoveryWitnessUpdate(PendingRecoveryWitnessUpdate ite
   const uint64_t enqueue_cpu_start_ns =
       profiling ? RecoveryWitnessClientProfileNowNs() : 0;
 
+  PendingRecoveryWitnessUpdate item{std::move(request), callback};
   item.profiling = profiling;
   item.enqueue_time_ns = enqueue_time_ns;
 
@@ -730,9 +716,23 @@ void RayletClient::DispatchRecoveryWitnessBatch(
               << batch->size() << " received=" << reply.replies_size();
         }
 
-        const auto stamp_reply = [&](size_t i,
-                                     rpc::UpdateRecoveryWitnessReply &item_reply,
-                                     uint64_t batch_demux_cpu_time_ns) {
+        for (size_t i = 0; i < batch->size(); ++i) {
+          const uint64_t batch_demux_cpu_start_ns =
+              (*batch)[i].profiling
+                  ? RecoveryWitnessClientProfileNowNs()
+                  : 0;
+          rpc::UpdateRecoveryWitnessReply item_reply;
+          if (status.ok() && reply_shape_ok) {
+            item_reply.Swap(reply.mutable_replies(static_cast<int>(i)));
+          }
+          const uint64_t batch_demux_cpu_time_ns =
+              batch_demux_cpu_start_ns != 0
+                  ? RecoveryWitnessClientProfileNowNs() -
+                        batch_demux_cpu_start_ns
+                  : 0;
+          // Transport failures retain their non-OK status. A malformed
+          // successful batch reply yields the default stored=false item reply,
+          // which safely fails that logical witness update.
           if ((*batch)[i].profiling) {
             item_reply.set_client_queue_time_ns((*batch)[i].client_queue_time_ns);
             if (amortized_witness_handler_ns != 0) {
@@ -755,59 +755,7 @@ void RayletClient::DispatchRecoveryWitnessBatch(
             item_reply.set_client_batch_demux_cpu_time_ns(
                 batch_demux_cpu_time_ns);
           }
-        };
-
-        for (size_t i = 0; i < batch->size();) {
-          if ((*batch)[i].batch_handler != nullptr) {
-            // Preserve physical-reply order, including mixed cold-path items.
-            // Only an adjacent run for the same owner handler is combined.
-            const auto handler = (*batch)[i].batch_handler;
-            size_t end = i + 1;
-            while (end < batch->size() && (*batch)[end].batch_handler == handler) {
-              ++end;
-            }
-            const uint64_t demux_start_ns =
-                batch_callback_entry_ns != 0 ? RecoveryWitnessClientProfileNowNs() : 0;
-            std::vector<RecoveryWitnessAckResult> results;
-            results.reserve(end - i);
-            // Invalid reply shape fails the whole physical batch closed, just
-            // as the legacy demultiplexer does. Never infer success from size.
-            std::vector<rpc::UpdateRecoveryWitnessReply> failed_replies;
-            if (!status.ok() || !reply_shape_ok) {
-              failed_replies.resize(end - i);
-            }
-            for (size_t j = i; j < end; ++j) {
-              auto *item_reply = failed_replies.empty()
-                                     ? reply.mutable_replies(static_cast<int>(j))
-                                     : &failed_replies[j - i];
-              results.push_back({(*batch)[j].context, item_reply});
-            }
-            const uint64_t demux_ns = demux_start_ns != 0
-                ? (RecoveryWitnessClientProfileNowNs() - demux_start_ns) / (end - i)
-                : 0;
-            for (size_t j = i; j < end; ++j) {
-              auto *item_reply = failed_replies.empty()
-                                     ? reply.mutable_replies(static_cast<int>(j))
-                                     : &failed_replies[j - i];
-              stamp_reply(j, *item_reply, demux_ns);
-            }
-            // Reply views avoid constructing/swapping a logical reply and
-            // invoking a std::function for every ordinary publication.
-            handler->HandleReplies(status, results);
-            i = end;
-            continue;
-          }
-
-          const uint64_t demux_start_ns = (*batch)[i].profiling
-              ? RecoveryWitnessClientProfileNowNs() : 0;
-          rpc::UpdateRecoveryWitnessReply item_reply;
-          if (status.ok() && reply_shape_ok) {
-            item_reply.Swap(reply.mutable_replies(static_cast<int>(i)));
-          }
-          stamp_reply(i, item_reply, demux_start_ns != 0
-              ? RecoveryWitnessClientProfileNowNs() - demux_start_ns : 0);
           (*batch)[i].callback(status, std::move(item_reply));
-          ++i;
         }
 
         auto next_batch =

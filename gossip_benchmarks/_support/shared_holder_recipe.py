@@ -101,7 +101,6 @@ def run_parent(args):
                 cmd += ["--shared-recipe", str(enabled)]
                 env = comparison.b58.child_env(profiling=False)
                 env["RAY_RECOVERY_SHARED_HOLDER_RECIPE"] = str(enabled)
-                env["RAY_RECOVERY_WITNESS_BATCH_ACK"] = "0"
                 print(f"[{case_number}/{args.repetitions * 8}] {name}", flush=True)
                 log_path = out / f"{name}.log"
                 try:
@@ -183,7 +182,6 @@ def main():
         if os.environ.get("RAY_RECOVERY_PROFILING") != "0":
             p.error("Timed child requires RAY_RECOVERY_PROFILING=0")
         os.environ["RAY_RECOVERY_SHARED_HOLDER_RECIPE"] = str(args.shared_recipe)
-        os.environ["RAY_RECOVERY_WITNESS_BATCH_ACK"] = "0"
         row = comparison.b58.single_perf(args)
         expected = bool(args.shared_recipe) and comparison.method_family(args.single_variant) == "succession"
         if row["shared_holder_recipe_enabled"] != expected:

@@ -22,9 +22,9 @@ After rebuilding, run:
 python gossip_benchmarks/10_shared_holder_recipe_performance.py
 ```
 
-This uses the same 32-case paired design as experiment 09: four repetitions,
+This uses a 32-case paired design: four repetitions,
 Fixed-R/Succession at K=1/K=32, R=W=B=2, 1 KiB objects and separate 1 KiB recipe
-padding. OFF/ON order alternates. Batch ACKs are explicitly OFF in both arms.
+padding. OFF/ON order alternates.
 Fixed-R and K=1 are controls; only Succession K>1 takes the sharing path.
 JSON records the actual native flag, paired CSVs report changes within each
 method/K, and Student-t 95% intervals summarize those paired changes.
@@ -33,8 +33,8 @@ No plots or README changes are included.
 For service counters and CPU/task, run existing profiling separately:
 
 ```bash
-RAY_RECOVERY_WITNESS_BATCH_ACK=0 RAY_RECOVERY_SHARED_HOLDER_RECIPE=0 python gossip_benchmarks/03_profile.py --ks 1 32
-RAY_RECOVERY_WITNESS_BATCH_ACK=0 RAY_RECOVERY_SHARED_HOLDER_RECIPE=1 python gossip_benchmarks/03_profile.py --ks 1 32
+RAY_RECOVERY_SHARED_HOLDER_RECIPE=0 python gossip_benchmarks/03_profile.py --ks 1 32
+RAY_RECOVERY_SHARED_HOLDER_RECIPE=1 python gossip_benchmarks/03_profile.py --ks 1 32
 ```
 
 Read the raw service JSON or `service/all_counters.csv`, not only `service.log`.
@@ -56,8 +56,8 @@ bytes and recipe parsing are unchanged. No speedup is established.
 Existing correctness and owner-node diagnostics can select the experiment:
 
 ```bash
-RAY_RECOVERY_WITNESS_BATCH_ACK=0 RAY_RECOVERY_SHARED_HOLDER_RECIPE=1 python gossip_benchmarks/05_succession_correctness.py
-RAY_RECOVERY_WITNESS_BATCH_ACK=0 RAY_RECOVERY_SHARED_HOLDER_RECIPE=1 python gossip_benchmarks/04_owner_failure_throughput.py --k 32
+RAY_RECOVERY_SHARED_HOLDER_RECIPE=1 python gossip_benchmarks/05_succession_correctness.py
+RAY_RECOVERY_SHARED_HOLDER_RECIPE=1 python gossip_benchmarks/04_owner_failure_throughput.py --k 32
 ```
 
 Use new result directories for separate runs. The owner-failure workload is a

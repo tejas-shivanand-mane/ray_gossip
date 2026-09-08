@@ -2319,7 +2319,6 @@ class CoreWorker : public std::enable_shared_from_this<CoreWorker> {
 
   /// Distributed recovery succession state. Null when the feature is disabled.
   std::shared_ptr<RecoverySuccessionManager> recovery_succession_manager_;
-  std::shared_ptr<RecoveryWitnessAckBatchHandler> recovery_witness_ack_batch_handler_;
 
   // Patch 4E candidate-report microbatch queues. This lock protects only queue
   // metadata and is never held while sending an RPC.

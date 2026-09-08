@@ -14,11 +14,9 @@
 
 #pragma once
 
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "ray/common/id.h"
@@ -44,33 +42,6 @@ class ObjectID;
 class LeaseID;
 class NodeID;
 class BundleSpecification;
-
-// Local completion metadata only: none of these types change the wire protocol.
-struct RecoveryWitnessAckContext {
-  virtual ~RecoveryWitnessAckContext() = default;
-};
-
-struct RecoveryWitnessAckResult {
-  std::shared_ptr<RecoveryWitnessAckContext> context;
-  // Borrowed from the physical RPC reply; valid only during HandleReplies().
-  const rpc::UpdateRecoveryWitnessReply *reply;
-};
-
-struct RecoveryWitnessAckBatchStats {
-  uint64_t batches = 0;
-  uint64_t items = 0;
-  uint64_t bookkeeping_time_ns = 0;
-  uint64_t lock_wait_time_ns = 0;
-};
-
-class RecoveryWitnessAckBatchHandler {
- public:
-  virtual ~RecoveryWitnessAckBatchHandler() = default;
-  virtual void HandleReplies(const Status &status,
-                            const std::vector<RecoveryWitnessAckResult> &results) = 0;
-  virtual RecoveryWitnessAckBatchStats GetStats() const = 0;
-  virtual void ResetStats() = 0;
-};
 
 class RayletClientInterface {
  public:
@@ -261,20 +232,6 @@ class RayletClientInterface {
   virtual void UpdateRecoveryWitness(
       rpc::UpdateRecoveryWitnessRequest &&request,
       const rpc::ClientCallback<rpc::UpdateRecoveryWitnessReply> &callback) = 0;
-
-  // Default preserves compatibility with alternate clients and mocks. The
-  // production client delivers adjacent items for the same handler together.
-  virtual void UpdateRecoveryWitnessWithBatchHandler(
-      rpc::UpdateRecoveryWitnessRequest &&request,
-      std::shared_ptr<RecoveryWitnessAckContext> context,
-      std::shared_ptr<RecoveryWitnessAckBatchHandler> handler) {
-    UpdateRecoveryWitness(
-        std::move(request),
-        [context = std::move(context), handler = std::move(handler)](
-            const Status &status, rpc::UpdateRecoveryWitnessReply &&reply) {
-          handler->HandleReplies(status, {{context, &reply}});
-        });
-  }
 
   virtual void GetRecoveryWitness(
       rpc::GetRecoveryWitnessRequest &&request,

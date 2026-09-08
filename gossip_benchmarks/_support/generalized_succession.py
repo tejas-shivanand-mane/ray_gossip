@@ -50,13 +50,12 @@ def main():
     rows = []
     (out / "settings.json").write_text(json.dumps({
         "rw": args.rw, "shared_recipes": args.shared_recipes, "k": args.k,
-        "case_timeout_seconds": args.case_timeout_seconds, "batch_ack": False,
+        "case_timeout_seconds": args.case_timeout_seconds,
     }, indent=2) + "\n")
     for r, w in dict.fromkeys(args.rw):
         for shared in dict.fromkeys(args.shared_recipes):
             env = os.environ.copy()
             env.pop("PYTHONOPTIMIZE", None)
-            env["RAY_RECOVERY_WITNESS_BATCH_ACK"] = "0"
             env["RAY_RECOVERY_SHARED_HOLDER_RECIPE"] = str(shared)
             env["RAY_RECOVERY_CERTIFICATE_ADMISSION"] = "0"
             env["RAY_RECOVERY_TASKMANAGER_PIN"] = "0"
